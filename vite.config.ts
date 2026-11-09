@@ -5,6 +5,9 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
+    // GitHub Pages hosts this project under /Turag-Planning-Board/.
+    // Keep the root path for local development and other hosting platforms.
+    base: process.env.GITHUB_ACTIONS === 'true' ? '/Turag-Planning-Board/' : '/',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
