@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { BuyerMaster, CategoryMaster, MachineMaster, StyleMaster } from '../types';
+import { GoogleCalendarView } from './GoogleCalendarView';
 
 interface MasterDataViewProps {
   buyers: BuyerMaster[];
@@ -76,6 +77,18 @@ export function MasterDataView({
     lineNo: 1,
     status: 'Operational',
   });
+
+  // Global Shift Configuration state
+  const [shiftConfig, setShiftConfig] = useState({
+    regHours: 8.0,
+    regBreak: 1.0,
+    otHours: 2.0,
+    otBreak: 0.5,
+    weeklyHoliday: 'Friday',
+  });
+
+  const netHours = Math.max(0, shiftConfig.regHours - shiftConfig.regBreak + shiftConfig.otHours - shiftConfig.otBreak);
+  const netMinutes = Math.round(netHours * 60);
 
   return (
     <div className="space-y-5">
@@ -231,7 +244,11 @@ export function MasterDataView({
                 <th className="p-3 font-semibold">Style Code</th>
                 <th className="p-3 font-semibold">Buyer</th>
                 <th className="p-3 font-semibold">Category</th>
-                <th className="p-3 font-semibold text-right">Standard Min (SMV)</th>
+                <th className="p-3 font-semibold text-right">Standard SMV</th>
+                <th className="p-3 font-semibold text-right">Std Manpower</th>
+                <th className="p-3 font-semibold text-right">Target Eff.</th>
+                <th className="p-3 font-semibold">Machine Reqs</th>
+                <th className="p-3 font-semibold">Learning Curve</th>
                 <th className="p-3 font-semibold">Description</th>
                 <th className="p-3 font-semibold text-center">Actions</th>
               </tr>
@@ -251,7 +268,11 @@ export function MasterDataView({
                     <td className="p-3 font-medium whitespace-nowrap">{s.buyerName}</td>
                     <td className="p-3 whitespace-nowrap">{s.category}</td>
                     <td className="p-3 text-right font-bold whitespace-nowrap">{s.smv} min</td>
-                    <td className="p-3 text-[var(--color-fg-muted)]">{s.description || '—'}</td>
+                    <td className="p-3 text-right font-medium whitespace-nowrap">{s.stdManpower ?? 40} ops</td>
+                    <td className="p-3 text-right font-bold text-[var(--color-ok)] whitespace-nowrap">{s.targetEfficiency ?? 75}%</td>
+                    <td className="p-3 whitespace-nowrap text-[var(--color-fg-muted)]">{s.machineRequirements || 'Standard Line Set'}</td>
+                    <td className="p-3 whitespace-nowrap text-[11px] font-medium">{s.learningCurveProfile || 'Standard (3-Day Ramp)'}</td>
+                    <td className="p-3 text-[var(--color-fg-muted)] max-w-[180px] truncate">{s.description || '—'}</td>
                     <td className="p-3 text-center whitespace-nowrap">
                       <button
                         type="button"
@@ -346,26 +367,118 @@ export function MasterDataView({
         </div>
       )}
 
-      {/* Calendar Tab */}
+      {/* Calendar & Shift Configuration Tab */}
       {tab === 'calendar' && (
-        <div className="p-4 rounded-xl border border-[var(--color-border-line)] bg-[var(--color-bg)] space-y-3">
-          <div className="flex justify-between items-center pb-2 border-b border-[var(--color-border-line)]">
-            <span className="font-bold text-sm">Active Factory Working Days ({calendar.length} Days)</span>
-            <span className="text-xs text-[var(--color-fg-muted)]">
-              Holidays already filtered out according to factory roster
-            </span>
-          </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2 max-h-[400px] overflow-y-auto p-1">
-            {calendar.map((d) => (
-              <div
-                key={d}
-                className="p-2 rounded-lg border border-[var(--color-border-line)] bg-[var(--color-panel)] text-center text-xs"
-              >
-                <span className="font-bold block">{d}</span>
-                <span className="text-[10px] text-[var(--color-ok)] font-medium">Working Day</span>
+        <div className="space-y-4 text-xs">
+          {/* Shift Configuration & Capacity Calculation Engine Panel */}
+          <div className="p-5 rounded-xl border border-[var(--color-border-line)] bg-[var(--color-panel)] space-y-4 shadow-xs">
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--color-border-line)]">
+              <div>
+                <h3 className="text-sm font-bold tracking-tight">Working Calendar &amp; Shift Configuration Engine</h3>
+                <p className="text-[11px] text-[var(--color-fg-muted)]">
+                  Configure shift hours, break times, overtime allocations, and capacity calculation parameters
+                </p>
               </div>
-            ))}
+              <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-sky-500/15 text-sky-500 border border-sky-500/30">
+                Formula: Net Production Hours = Regular Hours − Regular Break + OT Hours − OT Break
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+              <div className="p-3 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border-line)] space-y-1.5">
+                <label className="text-[10px] text-[var(--color-fg-muted)] font-semibold block">Regular Working Hours</label>
+                <input
+                  type="number"
+                  step="0.5"
+                  min="0"
+                  max="16"
+                  value={shiftConfig.regHours}
+                  onChange={(e) => setShiftConfig({ ...shiftConfig, regHours: Number(e.target.value) })}
+                  className="w-full px-2 py-1 rounded border border-[var(--color-border-line)] bg-[var(--color-panel)] font-bold text-sky-500 text-sm"
+                />
+                <span className="text-[10px] text-[var(--color-fg-muted)] block">{Math.round(shiftConfig.regHours * 60)} minutes</span>
+              </div>
+
+              <div className="p-3 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border-line)] space-y-1.5">
+                <label className="text-[10px] text-[var(--color-fg-muted)] font-semibold block">Regular Break Duration</label>
+                <input
+                  type="number"
+                  step="0.25"
+                  min="0"
+                  max="4"
+                  value={shiftConfig.regBreak}
+                  onChange={(e) => setShiftConfig({ ...shiftConfig, regBreak: Number(e.target.value) })}
+                  className="w-full px-2 py-1 rounded border border-[var(--color-border-line)] bg-[var(--color-panel)] font-bold text-amber-500 text-sm"
+                />
+                <span className="text-[10px] text-[var(--color-fg-muted)] block">{Math.round(shiftConfig.regBreak * 60)} minutes</span>
+              </div>
+
+              <div className="p-3 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border-line)] space-y-1.5">
+                <label className="text-[10px] text-[var(--color-fg-muted)] font-semibold block">Planned Overtime (OT)</label>
+                <input
+                  type="number"
+                  step="0.5"
+                  min="0"
+                  max="8"
+                  value={shiftConfig.otHours}
+                  onChange={(e) => setShiftConfig({ ...shiftConfig, otHours: Number(e.target.value) })}
+                  className="w-full px-2 py-1 rounded border border-[var(--color-border-line)] bg-[var(--color-panel)] font-bold text-emerald-500 text-sm"
+                />
+                <span className="text-[10px] text-[var(--color-fg-muted)] block">{Math.round(shiftConfig.otHours * 60)} minutes</span>
+              </div>
+
+              <div className="p-3 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border-line)] space-y-1.5">
+                <label className="text-[10px] text-[var(--color-fg-muted)] font-semibold block">OT Break Duration</label>
+                <input
+                  type="number"
+                  step="0.25"
+                  min="0"
+                  max="2"
+                  value={shiftConfig.otBreak}
+                  onChange={(e) => setShiftConfig({ ...shiftConfig, otBreak: Number(e.target.value) })}
+                  className="w-full px-2 py-1 rounded border border-[var(--color-border-line)] bg-[var(--color-panel)] font-bold text-amber-500 text-sm"
+                />
+                <span className="text-[10px] text-[var(--color-fg-muted)] block">{Math.round(shiftConfig.otBreak * 60)} minutes</span>
+              </div>
+
+              <div className="p-3 rounded-lg bg-[var(--color-bg)] border border-emerald-500/40 space-y-1.5">
+                <span className="text-[10px] text-[var(--color-fg-muted)] font-semibold block">Net Production Hours</span>
+                <span className="text-base font-extrabold text-[var(--color-ok)] block">{netHours} hrs</span>
+                <span className="text-[10px] text-[var(--color-ok)] block font-mono font-bold">{netMinutes} net mins</span>
+              </div>
+
+              <div className="p-3 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border-line)] space-y-1.5">
+                <label className="text-[10px] text-[var(--color-fg-muted)] font-semibold block">Weekly Holiday Roster</label>
+                <select
+                  value={shiftConfig.weeklyHoliday}
+                  onChange={(e) => setShiftConfig({ ...shiftConfig, weeklyHoliday: e.target.value })}
+                  className="w-full px-2 py-1 rounded border border-[var(--color-border-line)] bg-[var(--color-panel)] font-bold text-purple-500 text-xs cursor-pointer"
+                >
+                  <option value="Friday">Friday (Standard)</option>
+                  <option value="Sunday">Sunday</option>
+                  <option value="Saturday">Saturday</option>
+                  <option value="None">None (Continuous Shift)</option>
+                </select>
+                <span className="text-[10px] text-[var(--color-fg-muted)] block">Roster Day Off</span>
+              </div>
+            </div>
+
+            {/* Capacity Formulas Summary Box */}
+            <div className="p-3.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border-line)] space-y-2">
+              <span className="font-bold text-xs block text-sky-500">📐 Finite Capacity Calculation Formulas</span>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px] font-mono">
+                <div className="p-2 rounded bg-[var(--color-panel)] border border-[var(--color-border-line)]">
+                  <b>Daily Production Capacity (pcs)</b> = Available Operators × Net Working Minutes × Planned Efficiency % ÷ SMV
+                </div>
+                <div className="p-2 rounded bg-[var(--color-panel)] border border-[var(--color-border-line)]">
+                  <b>Daily Available Capacity (SMV Min)</b> = Available Operators × Net Working Minutes × Planned Efficiency %
+                </div>
+              </div>
+            </div>
           </div>
+
+          {/* Active Factory Working Days - Google Calendar View */}
+          <GoogleCalendarView calendar={calendar} />
         </div>
       )}
 

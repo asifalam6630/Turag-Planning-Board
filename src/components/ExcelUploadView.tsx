@@ -241,16 +241,83 @@ export function ExcelUploadView({
             Import, validate, detect duplicates, and preview spreadsheet records before committing to the database
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <label className="text-xs font-semibold text-[var(--color-fg-muted)]">Target Module:</label>
-          <select
-            value={targetModule}
-            onChange={(e) => setTargetModule(e.target.value as any)}
-            className="px-3 py-1.5 text-xs font-bold rounded-lg border border-[var(--color-border-line)] bg-[var(--color-panel)] cursor-pointer"
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={() => {
+              const sampleOrders = [
+                {
+                  'PO Number': 'PO-8849',
+                  Buyer: 'H&M',
+                  Style: 'TR-2026-X',
+                  Category: 'Knit Tops',
+                  Color: 'Navy Blue',
+                  'Order Qty': 5000,
+                  SMV: 12.5,
+                  FOB: 4.8,
+                  CM: 1.2,
+                  'PO ETD': '2026-12-15',
+                  'Updated ETD': '2026-12-15',
+                },
+                {
+                  'PO Number': 'PO-8850',
+                  Buyer: 'Zara',
+                  Style: 'ZR-POLO-01',
+                  Category: 'Polo Shirt',
+                  Color: 'Heather Grey',
+                  'Order Qty': 8000,
+                  SMV: 14.5,
+                  FOB: 6.2,
+                  CM: 1.5,
+                  'PO ETD': '2026-12-20',
+                  'Updated ETD': '2026-12-20',
+                },
+              ];
+              const ws = XLSX.utils.json_to_sheet(sampleOrders);
+              const wb = XLSX.utils.book_new();
+              XLSX.utils.book_append_sheet(wb, ws, 'Order Database Template');
+              XLSX.writeFile(wb, 'Turag_Order_Upload_Template.xlsx');
+            }}
+            className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-[var(--color-border-line)] bg-[var(--color-panel)] hover:bg-[var(--color-border-line)] cursor-pointer"
           >
-            <option value="orders">Order Database (Order Sheet)</option>
-            <option value="plan">Production Line Plan</option>
-          </select>
+            📥 Download Order Template (.xlsx)
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const samplePlan = [
+                {
+                  Line: 1,
+                  'PO Number': 'PO-8849',
+                  Buyer: 'H&M',
+                  Style: 'TR-2026-X',
+                  Category: 'Knit Tops',
+                  'Plan Qty': 5000,
+                  SMV: 12.5,
+                  PSD: '2026-11-20',
+                  PED: '2026-12-05',
+                },
+              ];
+              const ws = XLSX.utils.json_to_sheet(samplePlan);
+              const wb = XLSX.utils.book_new();
+              XLSX.utils.book_append_sheet(wb, ws, 'Line Plan Template');
+              XLSX.writeFile(wb, 'Turag_Line_Plan_Upload_Template.xlsx');
+            }}
+            className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-[var(--color-border-line)] bg-[var(--color-panel)] hover:bg-[var(--color-border-line)] cursor-pointer"
+          >
+            📥 Download Line Plan Template (.xlsx)
+          </button>
+          <div className="flex items-center gap-1.5 ml-2">
+            <label className="text-xs font-semibold text-[var(--color-fg-muted)]">Target:</label>
+            <select
+              value={targetModule}
+              onChange={(e) => setTargetModule(e.target.value as any)}
+              className="px-3 py-1.5 text-xs font-bold rounded-lg border border-[var(--color-border-line)] bg-[var(--color-panel)] cursor-pointer"
+            >
+              <option value="orders">Order Database (Order Sheet)</option>
+              <option value="plan">Production Line Plan</option>
+            </select>
+          </div>
         </div>
       </div>
 

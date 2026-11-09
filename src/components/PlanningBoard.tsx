@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { bisectLeft, bisectRight, group, sum, utcDay, utcDays, utcFormat } from 'd3';
-import type { BoardState, Filters, PlanRow, PoView } from '../types';
+import type { BoardState, Filters, LineLoad, PlanRow, PoView } from '../types';
 import { matchesFilters } from '../lib/calcs';
 import { COLORS, fd, fdLong, int, statusColor, toDate, todayIso } from '../lib/format';
 import { useTooltip } from '../hooks';
@@ -15,9 +15,10 @@ interface Props {
   lines: number[];        // all lines, in order
   filters: Filters;
   board: BoardState;
+  load?: LineLoad[];      // capacity load records
   onCardClick?: (r: PlanRow) => void;
   onOpenLineAllocation?: () => void;
-  onMoveCardToLine?: (cardId: string, targetLine: number) => void;
+  onMoveCardToLine?: (cardId: string, targetLine: number, targetPsd?: string) => void;
 }
 
 interface Card {
@@ -32,7 +33,7 @@ interface Card {
 
 const byPsd = (a: PlanRow, b: PlanRow) => ((a.psd ?? '') < (b.psd ?? '') ? -1 : (a.psd ?? '') > (b.psd ?? '') ? 1 : 0);
 
-export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCardClick, onOpenLineAllocation, onMoveCardToLine }: Props) {
+export function PlanningBoard({ plan, pv, calendar, lines, filters, board, load, onCardClick, onOpenLineAllocation, onMoveCardToLine }: Props) {
   const { boxRef, tip, show, hide } = useTooltip<HTMLDivElement>();
   const scrollRef = useRef<HTMLDivElement>(null);
   const cornerRef = useRef<HTMLDivElement>(null);
@@ -40,11 +41,52 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCar
   const lastTodayTick = useRef(-1);
   const todayS = todayIso();
 
-  // Drag and drop line change state
+  // Drag and drop line & date change state
   const [draggingCardId, setDraggingCardId] = useState<string | null>(null);
   const [draggingSourceLine, setDraggingSourceLine] = useState<number | null>(null);
   const [dragOverLine, setDragOverLine] = useState<number | null>(null);
+  const [dragHoverDate, setDragHoverDate] = useState<string | null>(null);
   const isDraggingRef = useRef(false);
+
+  // Compute capacity overload map per (line|date)
+  const overloadMap = useMemo(() => {
+    const m = new Map<string, { shortageMin: number; availMin: number; planMin: number; eff: number }>();
+    if (!load) return m;
+    for (const item of load) {
+      if (item.availMin > 0 && item.planMin > item.availMin) {
+        m.set(item.key, {
+          shortageMin: item.planMin - item.availMin,
+          availMin: item.availMin,
+          planMin: item.planMin,
+          eff: item.eff ?? 1.1,
+        });
+      }
+    }
+    return m;
+  }, [load]);
+
+  const getCardCapacityInfo = (r: PlanRow) => {
+    if (!r.psd || !r.ped) return { isOverloaded: false, maxShortage: 0, highUtil: false };
+    const sIdx = Math.max(0, bisectLeft(calendar, r.psd));
+    const eIdx = Math.min(calendar.length - 1, bisectRight(calendar, r.ped) - 1);
+    let isOverloaded = false;
+    let maxShortage = 0;
+    let highUtil = false;
+
+    for (let i = sIdx; i <= eIdx; i++) {
+      const k = `${r.line}|${calendar[i]}`;
+      const ov = overloadMap.get(k);
+      if (ov) {
+        isOverloaded = true;
+        if (ov.shortageMin > maxShortage) maxShortage = ov.shortageMin;
+      }
+      const lItem = load?.find((ld) => ld.key === k);
+      if (lItem && lItem.eff && lItem.eff >= 0.9) {
+        highUtil = true;
+      }
+    }
+    return { isOverloaded, maxShortage, highUtil };
+  };
 
   const model = useMemo(() => {
     const all = plan.filter((r) => r.psd && r.ped);
@@ -57,11 +99,13 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCar
     // Working-day columns
     const minPsd = all.reduce<string | null>((m, r) => (!m || (r.psd as string) < m ? (r.psd as string) : m), null) ?? todayS;
     const maxPed = all.reduce<string | null>((m, r) => (!m || (r.ped as string) > m ? (r.ped as string) : m), null) ?? todayS;
-    let lo = board.from ?? (minPsd < todayS ? minPsd : todayS);
-    let hi = board.to ?? (maxPed > todayS ? maxPed : todayS);
+    let lo = board.from ?? minPsd;
+    let hi = board.to ?? maxPed;
     if (hi < lo) [lo, hi] = [hi, lo];
     let days = calendar.filter((d) => d >= lo && d <= hi);
-    if (!board.to) days = days.concat(calendar.filter((d) => d > hi).slice(0, 3));
+    if (!board.to && calendar.filter((d) => d > hi).length > 0) {
+      days = days.concat(calendar.filter((d) => d > hi).slice(0, 3));
+    }
     if (days.length < 2) days = utcDays(toDate(lo), utcDay.offset(toDate(hi), 4)).map((d) => d.toISOString().slice(0, 10));
 
     // Sequence on each line and colour groups, from the whole plan so they stay put while filtering
@@ -93,7 +137,15 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCar
   const styles = useMemo(() => [...new Set(plan.map((r) => r.style))].sort(), [plan]);
   const orders = useMemo(() => [...new Set(plan.map((r) => r.po))].sort(), [plan]);
   const late = (r: PlanRow) => (pv.get(r.id)?.devDays ?? 0) > 0;
+
   const colorOf = (r: PlanRow): string => {
+    if (board.color === 'capacity') {
+      const { isOverloaded, highUtil } = getCardCapacityInfo(r);
+      if (isOverloaded) return 'var(--color-bad)'; // RED: Overload
+      if (highUtil || late(r)) return 'var(--color-warn)'; // AMBER: High load or risk
+      if (r.running || r.status === 'Plan' || r.status === 'Running') return 'var(--color-ok)'; // GREEN: Valid capacity
+      return '#71717a'; // GREY: Inactive
+    }
     if (board.color === 'style') return COLORS[styles.indexOf(r.style) % COLORS.length];
     if (board.color === 'order') return COLORS[orders.indexOf(r.po) % COLORS.length];
     if (board.color === 'status') return statusColor(r.status);
@@ -101,6 +153,7 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCar
     if (board.color === 'risk') return late(r) ? 'var(--color-bad)' : 'var(--color-ok)';
     return COLORS[(grp.get(r.id) ?? 0) % COLORS.length];
   };
+
   const workDays = (a: string, b: string) => (calendar.length ? bisectRight(calendar, b) - bisectLeft(calendar, a) : utcDay.count(toDate(a), toDate(b)) + 1);
 
   // Month bands
@@ -153,6 +206,7 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCar
   const tipFor = (r: PlanRow, wd: number): [string, string[]] => {
     const v = pv.get(r.id);
     const dd = v?.devDays ?? null;
+    const { isOverloaded, maxShortage } = getCardCapacityInfo(r);
     return [
       `Line ${r.line} · #${seq.get(r.id)} · ${r.buyer} · Style ${r.style}`,
       [
@@ -162,8 +216,9 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCar
         `Sewing ${r.running ? 'running' : fd(r.psd)} to ${fd(r.ped)} · ${wd} working days · ${runOf(r)}`,
         `Plan ETD ${fd(r.planEtd)} · Updated ETD ${fd(r.updEtd)}`,
         dd == null ? '' : dd > 0 ? `Ships ${dd} days after the updated ETD` : `${-dd} days ahead of the updated ETD`,
+        isOverloaded ? `🔴 OVERLOAD CONFLICT: Shortage of ${int(maxShortage)} std min on Line ${r.line}` : '',
         `Present status: ${r.status}${r.remarks ? ' · ' + r.remarks : ''}`
-      ]
+      ].filter(Boolean)
     ];
   };
 
@@ -213,10 +268,25 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCar
             const rs = [...(byLine.get(l) ?? [])].sort(byPsd);
             const cards: Card[] = [];
             for (const r of rs) {
-              const s = bisectLeft(days, r.psd as string);
-              const e = bisectRight(days, r.ped as string) - 1;
-              if (e < 0 || s >= n || e < s) continue;
-              cards.push({ r, x: s * px + 2, w: Math.max(8, (e - s + 1) * px - 4), lane: 0, cutL: (r.psd as string) < days[0], cutR: (r.ped as string) > days[n - 1], days: workDays(r.psd as string, r.ped as string) });
+              const psdStr = r.psd as string;
+              const pedStr = r.ped as string;
+              if (!psdStr || !pedStr) continue;
+
+              // Check if order is completely outside visible days range
+              if (pedStr < days[0] || psdStr > days[n - 1]) continue;
+
+              let s = bisectLeft(days, psdStr);
+              let e = bisectRight(days, pedStr) - 1;
+
+              s = Math.max(0, Math.min(n - 1, s));
+              e = Math.max(0, Math.min(n - 1, e));
+              if (e < s) e = s;
+
+              const cutL = psdStr < days[0];
+              const cutR = pedStr > days[n - 1];
+              const x = s * px + 2;
+              const w = Math.max(16, (e - s + 1) * px - 4);
+              cards.push({ r, x, w, lane: 0, cutL, cutR, days: workDays(psdStr, pedStr) });
             }
             const ends: number[] = [];
             for (const c of cards) {
@@ -230,7 +300,9 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCar
             const h = pad * 2 + nl * laneH + (nl - 1) * gap;
             const total = sum(rs, (r) => r.planQty ?? 0);
 
-            const isRowDropTarget = dragOverLine === l && draggingSourceLine !== l;
+            const isRowDropTarget = dragOverLine === l;
+            // Overloaded dates on this line
+            const lineOverloadedDates = days.filter((d) => overloadMap.has(`${l}|${d}`));
 
             return (
               <div
@@ -241,6 +313,14 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCar
                   e.preventDefault();
                   e.dataTransfer.dropEffect = 'move';
                   if (dragOverLine !== l) setDragOverLine(l);
+
+                  // Calculate hover date under cursor
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const offsetX = e.clientX - rect.left - 212; // minus left panel width
+                  const colIdx = Math.max(0, Math.min(days.length - 1, Math.floor(offsetX / px)));
+                  if (days[colIdx] && dragHoverDate !== days[colIdx]) {
+                    setDragHoverDate(days[colIdx]);
+                  }
                 }}
                 onDragEnter={(e) => {
                   if (!draggingCardId) return;
@@ -255,14 +335,19 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCar
                 onDrop={(e) => {
                   e.preventDefault();
                   const cardId = e.dataTransfer.getData('text/plain') || draggingCardId;
-                  const fromLine = draggingSourceLine;
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const offsetX = e.clientX - rect.left - 212;
+                  const colIdx = Math.max(0, Math.min(days.length - 1, Math.floor(offsetX / px)));
+                  const targetPsd = days[colIdx] ?? undefined;
+
                   setDragOverLine(null);
+                  setDragHoverDate(null);
                   setDraggingCardId(null);
                   setDraggingSourceLine(null);
+
                   if (!cardId) return;
-                  if (fromLine === l) return;
                   if (onMoveCardToLine) {
-                    onMoveCardToLine(cardId, l);
+                    onMoveCardToLine(cardId, l, targetPsd);
                   }
                 }}
               >
@@ -273,9 +358,15 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCar
                     <span className="pb-badge">{rs.length} {rs.length === 1 ? 'order' : 'orders'}</span>
                   </div>
                   <div className="pb-kv"><span>Total planned</span><b>{int(total)} pcs</b></div>
+                  {lineOverloadedDates.length > 0 && (
+                    <div className="px-2 py-0.5 rounded bg-[var(--color-bad)]/15 border border-[var(--color-bad)]/40 text-[var(--color-bad)] font-bold text-[10px] flex items-center justify-between animate-pulse">
+                      <span>⚠️ Overload Conflict</span>
+                      <span>{lineOverloadedDates.length}d</span>
+                    </div>
+                  )}
                   {isRowDropTarget ? (
                     <div className="pb-tracks bg-[var(--series-1)] text-white font-bold animate-pulse text-[11px] py-1 shadow-xs">
-                      <span>📥 Drop to reassign to Line {l}</span>
+                      <span>📥 Drop: Line {l} {dragHoverDate ? `(${fd(dragHoverDate)})` : ''}</span>
                     </div>
                   ) : (
                     board.multi && cards.length > 0 && (
@@ -284,18 +375,41 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCar
                   )}
                 </div>
                 <div className="pb-lane relative" style={{ width: W, height: h, backgroundSize: `${px}px 100%` }}>
+                  {/* Overloaded Date Column Background Highlights */}
+                  {days.map((d, i) => {
+                    const ov = overloadMap.get(`${l}|${d}`);
+                    if (!ov) return null;
+                    return (
+                      <div
+                        key={`ov_${l}_${d}`}
+                        className="absolute top-0 bottom-0 pointer-events-none bg-[var(--color-bad)]/15 border-x border-[var(--color-bad)]/30 z-0"
+                        style={{ left: i * px, width: px }}
+                        title={`Capacity Overload on Line ${l} (${fd(d)}): Shortage of ${int(ov.shortageMin)} std min`}
+                      />
+                    );
+                  })}
+
                   {isRowDropTarget && (
                     <div className="absolute inset-0 z-20 flex items-center justify-center bg-[var(--series-1)]/15 border-2 border-dashed border-[var(--series-1)] rounded pointer-events-none animate-in fade-in duration-100">
                       <div className="px-3.5 py-1.5 bg-[var(--series-1)] text-white text-xs font-bold rounded-lg shadow-lg flex items-center gap-2">
                         <span className="text-sm">⇄</span>
-                        <span>Drop here to move order to Line {l}</span>
+                        <span>
+                          Drop here to move order to Line {l}
+                          {dragHoverDate ? ` starting ${fd(dragHoverDate)}` : ''}
+                        </span>
                       </div>
                     </div>
                   )}
                   {ti >= 0 && <div className="pb-todaycol" style={{ left: ti * px, width: px }} />}
                   {ti >= 0 && <div className="pb-todayline" style={{ left: ti * px + px / 2 }} />}
                   {!cards.length && (
-                    <span className="pb-empty">{rs.length ? 'No POs in this date range' : narrowed ? 'No POs match these filters' : 'No POs loaded'}</span>
+                    <span className="pb-empty flex items-center gap-1.5">
+                      {rs.length
+                        ? `📅 Order planned (${fd(rs[0].psd)} → ${fd(rs[0].ped)}) outside current date view range`
+                        : narrowed
+                        ? 'No POs match these filters'
+                        : 'No POs loaded'}
+                    </span>
                   )}
                   {cards.map((c) => {
                     const r = c.r;
@@ -303,11 +417,14 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCar
                     const [title, tipLines] = tipFor(r, c.days);
                     const cardTip = cardDataFor(r, c.days);
                     const isDraggingThis = draggingCardId === r.id;
+                    const { isOverloaded, maxShortage } = getCardCapacityInfo(r);
 
                     return (
                       <div
                         key={r.id}
-                        className={`pb-card group/card ${isDraggingThis ? 'is-dragging' : ''}`}
+                        className={`pb-card group/card ${isDraggingThis ? 'is-dragging' : ''} ${
+                          isOverloaded ? 'ring-2 ring-[var(--color-bad)] shadow-md' : ''
+                        }`}
                         style={style}
                         tabIndex={0}
                         role="button"
@@ -324,11 +441,12 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCar
                           setDraggingCardId(null);
                           setDraggingSourceLine(null);
                           setDragOverLine(null);
+                          setDragHoverDate(null);
                           setTimeout(() => {
                             isDraggingRef.current = false;
                           }, 150);
                         }}
-                        aria-label={`Line ${l}, ${r.buyer} style ${r.style}, PO ${r.po}, ${int(r.planQty ?? 0)} pieces, ${fd(r.psd)} to ${fd(r.ped)}. Drag to change line, click to split line.`}
+                        aria-label={`Line ${l}, ${r.buyer} style ${r.style}, PO ${r.po}, ${int(r.planQty ?? 0)} pieces, ${fd(r.psd)} to ${fd(r.ped)}. Drag to change line or start date.`}
                         onPointerMove={(e) => {
                           if (!draggingCardId) show(e, title, tipLines, cardTip);
                         }}
@@ -349,11 +467,19 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCar
                           {/* Drag handle chip */}
                           <span
                             className="pb-chip font-bold text-[9px] opacity-75 group-hover/card:opacity-100 cursor-grab active:cursor-grabbing select-none"
-                            title="Drag card to move to another line"
+                            title="Drag card to move to another line or change start date"
                           >
                             ⠿ Move
                           </span>
                           <span className="pb-chip pb-n">#{seq.get(r.id)}</span>
+                          {isOverloaded && (
+                            <span
+                              className="pb-chip font-bold text-[10px] bg-[var(--color-bad)] text-white border-[var(--color-bad)] animate-pulse"
+                              title={`Capacity overload conflict: Shortage of ${int(maxShortage)} std min`}
+                            >
+                              ⚠️ Overload ({int(maxShortage)}m)
+                            </span>
+                          )}
                           {r.isSplit && (
                             <span className="pb-chip font-bold text-[10px] bg-[var(--series-4)] text-white border-[var(--series-4)]">
                               ✂ {r.splitPart ? `P${r.splitPart}` : 'Split'}
@@ -399,6 +525,16 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCar
 }
 
 export function BoardLegend({ plan, mode }: { plan: PlanRow[]; mode: BoardState['color'] }) {
+  if (mode === 'capacity') {
+    return (
+      <div className="sl-legend">
+        <span><i style={{ background: 'var(--color-bad)' }} />RED: Capacity Overload (Allocated &gt; Available)</span>
+        <span><i style={{ background: 'var(--color-warn)' }} />AMBER: High Utilization (&gt;90%) or Delivery Risk</span>
+        <span><i style={{ background: 'var(--color-ok)' }} />GREEN: Valid Capacity Allocation</span>
+        <span><i style={{ background: '#71717a' }} />GREY: Inactive / Finished</span>
+      </div>
+    );
+  }
   if (mode === 'style') {
     const styles = [...new Set(plan.map((r) => r.style))].sort();
     return (
@@ -441,3 +577,4 @@ export function BoardLegend({ plan, mode }: { plan: PlanRow[]; mode: BoardState[
   }
   return null;
 }
+

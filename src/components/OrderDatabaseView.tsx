@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
-import type { OrderRow, PlanRow } from '../types';
+import type { OrderRow, PlanRow, StyleMaster } from '../types';
 import { fdLong, int, usd } from '../lib/format';
 import * as XLSX from 'xlsx';
 
 interface OrderDatabaseViewProps {
   orders: OrderRow[];
   plan: PlanRow[];
+  styles?: StyleMaster[];
   onAddOrder: (order: OrderRow) => void;
   onUpdateOrder: (order: OrderRow) => void;
   onAssignToLine: (order: OrderRow) => void;
@@ -14,6 +15,7 @@ interface OrderDatabaseViewProps {
 export function OrderDatabaseView({
   orders,
   plan,
+  styles = [],
   onAddOrder,
   onUpdateOrder,
   onAssignToLine,
@@ -537,6 +539,34 @@ export function OrderDatabaseView({
             </div>
 
             <form onSubmit={handleCreateOrderSubmit} className="space-y-3.5 text-xs">
+              {styles.length > 0 && (
+                <div className="p-3 rounded-lg bg-[var(--color-panel)] border border-[var(--color-border-line)] space-y-1">
+                  <label className="block font-bold text-sky-500">Auto-Fill from Style Library</label>
+                  <select
+                    onChange={(e) => {
+                      const sel = styles.find((s) => s.id === e.target.value);
+                      if (sel) {
+                        setNewOrder((prev) => ({
+                          ...prev,
+                          style: sel.styleCode,
+                          buyer: sel.buyerName,
+                          category: sel.category,
+                          smv: sel.smv,
+                        }));
+                      }
+                    }}
+                    className="w-full px-2.5 py-1.5 rounded border border-[var(--color-border-line)] bg-[var(--color-bg)] cursor-pointer"
+                  >
+                    <option value="">-- Select a Style to Auto-Fill SMV &amp; Buyer --</option>
+                    {styles.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        Style {s.styleCode} ({s.buyerName} · {s.category} · SMV {s.smv}m)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block mb-1 font-semibold">Buyer Name *</label>

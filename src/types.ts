@@ -146,7 +146,7 @@ export interface Filters {
   status: string; // 'All' or present status
 }
 
-export type ColorMode = 'change' | 'style' | 'order' | 'status' | 'buyer' | 'risk';
+export type ColorMode = 'change' | 'style' | 'order' | 'status' | 'buyer' | 'risk' | 'capacity';
 export type RunStatus = 'All' | 'Running' | 'Not started' | 'Finished';
 export type ViewPreset = 'month' | 'week' | 'day';
 
@@ -234,6 +234,10 @@ export interface StyleMaster {
   category: string;
   smv: number;
   description: string;
+  stdManpower?: number;
+  targetEfficiency?: number;
+  machineRequirements?: string;
+  learningCurveProfile?: string;
 }
 
 export interface CategoryMaster {

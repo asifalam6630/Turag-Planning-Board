@@ -18,6 +18,7 @@ import type {
 } from './types';
 import { useDashboardData } from './hooks';
 import { bookStatus, lineLoad, lineSummary, poView, scopeKpi, unplanned } from './lib/calcs';
+import { fd, int } from './lib/format';
 import { Toolbar, VIEW_PX } from './components/Toolbar';
 import { BoardLegend, PlanningBoard } from './components/PlanningBoard';
 import { KpiTiles } from './components/Summary';
@@ -28,6 +29,10 @@ import { SplitModal } from './components/SplitModal';
 import type { SplitResult } from './components/SplitModal';
 import { ThemeSelector } from './components/ThemeSelector';
 import type { AppTheme } from './components/ThemeSelector';
+import { AutoResolveModal } from './components/AutoResolveModal';
+import type { ProposedChange } from './components/AutoResolveModal';
+import { solveCapacityConflicts } from './lib/rescheduler';
+import { bisectLeft, bisectRight } from 'd3';
 
 // ERP Views
 import { KpiDrillDownModal } from './components/KpiDrillDownModal';
@@ -58,6 +63,7 @@ const CUSTOM_LINES_KEY = 'turag-erp:custom-lines';
 const AUDIT_LOGS_KEY = 'turag-erp:audit-logs';
 const THEME_STORAGE_KEY = 'turag-erp:theme';
 const LINE_REASSIGNMENTS_KEY = 'turag-planning-board:line-reassignments';
+const DATE_ADJUSTMENTS_KEY = 'turag-planning-board:date-adjustments';
 
 export default function App() {
   const { state, custom, replace, restore } = useDashboardData();
@@ -73,6 +79,27 @@ export default function App() {
     } catch {
       return {};
     }
+  });
+
+  // Drag and drop start date adjustments state (persistent)
+  const [dateAdjustments, setDateAdjustments] = useState<Record<string, { psd: string; ped: string }>>(() => {
+    try {
+      const stored = localStorage.getItem(DATE_ADJUSTMENTS_KEY);
+      return stored ? JSON.parse(stored) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  // Smart Auto-Resolve state
+  const [autoResolveState, setAutoResolveState] = useState<{
+    isOpen: boolean;
+    proposedChanges: ProposedChange[];
+    conflictsBeforeCount: number;
+  }>({
+    isOpen: false,
+    proposedChanges: [],
+    conflictsBeforeCount: 0,
   });
 
   // Notification for line move with Undo support
@@ -301,10 +328,10 @@ export default function App() {
 
   // Master Data: Styles
   const [masterStyles, setMasterStyles] = useState<StyleMaster[]>([
-    { id: 'st_1', styleCode: '16', buyerName: 'ABC', category: 'Knit Tops', smv: 11.2, description: 'Basic Crewneck Short Sleeve Tee' },
-    { id: 'st_2', styleCode: 'TR-102', buyerName: 'Next', category: 'Polo Shirt', smv: 14.5, description: 'Pique Collar Solid Polo Shirt' },
-    { id: 'st_3', styleCode: 'ZR-884', buyerName: 'Zara', category: 'Hoodies', smv: 18.0, description: 'French Terry Relaxed Fit Hoodie' },
-    { id: 'st_4', styleCode: 'AW-09', buyerName: 'Turaag Active', category: 'Activewear', smv: 13.0, description: 'Performance Stretch Training Top' },
+    { id: 'st_1', styleCode: '16', buyerName: 'ABC', category: 'Knit Tops', smv: 11.2, description: 'Basic Crewneck Short Sleeve Tee', stdManpower: 38, targetEfficiency: 75, machineRequirements: 'SNLS x 14, 4T Overlock x 18, Flatlock x 6', learningCurveProfile: 'Standard 3-Day Curve' },
+    { id: 'st_2', styleCode: 'TR-102', buyerName: 'Next', category: 'Polo Shirt', smv: 14.5, description: 'Pique Collar Solid Polo Shirt', stdManpower: 42, targetEfficiency: 72, machineRequirements: 'SNLS x 16, 4T Overlock x 16, Buttonhole x 2, Placket x 8', learningCurveProfile: 'Moderate 4-Day Curve' },
+    { id: 'st_3', styleCode: 'ZR-884', buyerName: 'Zara', category: 'Hoodies', smv: 18.0, description: 'French Terry Relaxed Fit Hoodie', stdManpower: 46, targetEfficiency: 70, machineRequirements: 'SNLS x 18, Flatlock x 14, Eyelet x 2, Rib Attachment x 12', learningCurveProfile: 'Complex 5-Day Curve' },
+    { id: 'st_4', styleCode: 'AW-09', buyerName: 'Turaag Active', category: 'Activewear', smv: 13.0, description: 'Performance Stretch Training Top', stdManpower: 40, targetEfficiency: 78, machineRequirements: '4T/5T Overlock x 20, 6-Thread Flatseam x 12, Coverstitch x 8', learningCurveProfile: 'Technical 3-Day Curve' },
   ]);
 
   // Master Data: Product Categories
@@ -336,21 +363,28 @@ export default function App() {
   const { effectivePlan, effectiveDaily } = useMemo(() => {
     if (!d) return { effectivePlan: [] as PlanRow[], effectiveDaily: [] as DailyRow[] };
 
-    // Apply drag-and-drop line reassignments first
+    // Apply drag-and-drop line reassignments and date adjustments first
     let plan = d.plan.map((r) => {
+      let updated = { ...r };
       const newLine = lineReassignments[r.id];
       if (newLine !== undefined) {
-        return { ...r, line: newLine };
+        updated.line = newLine;
       }
-      return r;
+      const newDates = dateAdjustments[r.id];
+      if (newDates) {
+        updated.psd = newDates.psd;
+        updated.ped = newDates.ped;
+      }
+      return updated;
     });
 
     let daily = d.daily.map((dr) => {
+      let updated = { ...dr };
       const newLine = lineReassignments[dr.id];
       if (newLine !== undefined) {
-        return { ...dr, line: newLine };
+        updated.line = newLine;
       }
-      return dr;
+      return updated;
     });
 
     const splitEntries = Object.values(activeSplits);
@@ -417,7 +451,7 @@ export default function App() {
     }
 
     return { effectivePlan: plan, effectiveDaily: daily };
-  }, [d, activeSplits, lineReassignments]);
+  }, [d, activeSplits, lineReassignments, dateAdjustments]);
 
   // Derived dashboard metrics (Centralized calculation engine)
   const derived = useMemo(() => {
@@ -605,6 +639,80 @@ export default function App() {
       'Assign Order',
       `Assigned PO ${order.po} (${qty} pcs) to Line ${line} from ${psd} to ${ped}`
     );
+  };
+
+  // Capacity Overload Conflicts calculation
+  const capacityConflicts = useMemo(() => {
+    if (!derived?.load) return [];
+    return derived.load.filter((l) => l.availMin > 0 && l.planMin > l.availMin);
+  }, [derived]);
+
+  const handleOpenAutoResolve = () => {
+    if (!derived || !d) return;
+    const { proposedChanges, conflictsBeforeCount } = solveCapacityConflicts(
+      effectivePlan,
+      derived.load,
+      derived.calendar,
+      derived.lines
+    );
+    setAutoResolveState({
+      isOpen: true,
+      proposedChanges,
+      conflictsBeforeCount,
+    });
+  };
+
+  const handleApplyAutoResolve = (changes: ProposedChange[]) => {
+    if (!changes.length) return;
+
+    setLineReassignments((prev) => {
+      const updated = { ...prev };
+      changes.forEach((c) => {
+        updated[c.cardId] = c.proposedLine;
+      });
+      try {
+        localStorage.setItem(LINE_REASSIGNMENTS_KEY, JSON.stringify(updated));
+      } catch {
+        /* ignore */
+      }
+      return updated;
+    });
+
+    setDateAdjustments((prev) => {
+      const updated = { ...prev };
+      changes.forEach((c) => {
+        updated[c.cardId] = { psd: c.proposedPsd, ped: c.proposedPed };
+      });
+      try {
+        localStorage.setItem(DATE_ADJUSTMENTS_KEY, JSON.stringify(updated));
+      } catch {
+        /* ignore */
+      }
+      return updated;
+    });
+
+    setAutoResolveState((prev) => ({ ...prev, isOpen: false }));
+
+    addAuditLog(
+      'Planning Board',
+      'Auto-Resolve Capacity Conflicts',
+      `Applied smart rescheduling plan: Reallocated ${changes.length} orders across lines to resolve finite capacity overloads.`
+    );
+
+    setLineChangeNotification({
+      text: `⚡ Successfully auto-resolved ${changes.length} schedule capacity conflict(s).`,
+      onUndo: () => {
+        setLineReassignments({});
+        setDateAdjustments({});
+        try {
+          localStorage.removeItem(LINE_REASSIGNMENTS_KEY);
+          localStorage.removeItem(DATE_ADJUSTMENTS_KEY);
+        } catch {
+          /* ignore */
+        }
+        setLineChangeNotification(null);
+      },
+    });
   };
 
   const handleRemovePlanCard = (cardId: string) => {
@@ -804,6 +912,28 @@ export default function App() {
             </div>
           )}
 
+          {/* Capacity Overload Warning Banner */}
+          {capacityConflicts.length > 0 && (
+            <div className="flex items-center justify-between px-3.5 py-2.5 rounded-lg bg-[var(--color-bad)]/15 border border-[var(--color-bad)]/40 text-xs shadow-xs animate-in fade-in slide-in-from-top-1 flex-wrap gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="w-2.5 h-2.5 rounded-full bg-[var(--color-bad)] animate-ping" />
+                <span className="font-bold text-[var(--color-bad)]">
+                  ⚠️ Finite Capacity Overload Alert: {capacityConflicts.length} {capacityConflicts.length === 1 ? 'Slot' : 'Slots'} Exceeding Available Line Capacity
+                </span>
+                <span className="text-[var(--color-fg-muted)] hidden md:inline">
+                  (Line {capacityConflicts[0].line} on {capacityConflicts[0].date}: {int(capacityConflicts[0].planMin - capacityConflicts[0].availMin)} std min shortage)
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleOpenAutoResolve}
+                className="px-3 py-1 text-xs font-bold rounded bg-[var(--color-bad)] text-white hover:opacity-90 transition-all cursor-pointer shadow-xs flex items-center gap-1.5"
+              >
+                <span>⚡ Auto-Resolve Conflicts</span>
+              </button>
+            </div>
+          )}
+
           {Object.keys(activeSplits).length > 0 && (
             <div className="flex items-center justify-between px-3.5 py-2.5 rounded-lg bg-[var(--color-panel)] border border-[var(--series-4)]/40 text-xs shadow-xs">
               <div className="flex items-center gap-2">
@@ -838,6 +968,8 @@ export default function App() {
               calMax={derived.calendar[derived.calendar.length - 1]}
               onReset={reset}
               resetKey={resetKey}
+              conflictsCount={capacityConflicts.length}
+              onAutoResolve={handleOpenAutoResolve}
             />
             <BoardLegend plan={effectivePlan} mode={board.color} />
             <PlanningBoard
@@ -847,16 +979,19 @@ export default function App() {
               lines={derived.lines}
               filters={filters}
               board={board}
+              load={derived.load}
               onCardClick={(card) => setSplitCard(card)}
               onOpenLineAllocation={() => {
                 setActiveModule('line-allocation');
                 addAuditLog('Planning Board', 'Open Line Allocation', 'Opened Line Allocation workspace from board header button');
               }}
-              onMoveCardToLine={(cardId, targetLine) => {
+              onMoveCardToLine={(cardId, targetLine, targetPsd) => {
                 const card = effectivePlan.find((r) => r.id === cardId);
-                if (!card) return;
+                if (!card || !derived) return;
                 const oldLine = card.line;
-                if (oldLine === targetLine) return;
+                const oldPsd = card.psd;
+
+                if (oldLine === targetLine && (!targetPsd || targetPsd === oldPsd)) return;
 
                 setLineReassignments((prev) => {
                   const updated = { ...prev, [cardId]: targetLine };
@@ -868,14 +1003,39 @@ export default function App() {
                   return updated;
                 });
 
+                if (targetPsd && card.psd && card.ped) {
+                  const cal = derived.calendar;
+                  const sIdx = Math.max(0, bisectLeft(cal, card.psd));
+                  const eIdx = Math.min(cal.length - 1, bisectRight(cal, card.ped) - 1);
+                  const durationDays = Math.max(1, eIdx - sIdx + 1);
+
+                  const targetStartIdx = bisectLeft(cal, targetPsd);
+                  const targetEndIdx = Math.min(cal.length - 1, targetStartIdx + durationDays - 1);
+                  const targetPed = cal[targetEndIdx] ?? targetPsd;
+
+                  setDateAdjustments((prev) => {
+                    const updated = { ...prev, [cardId]: { psd: targetPsd, ped: targetPed } };
+                    try {
+                      localStorage.setItem(DATE_ADJUSTMENTS_KEY, JSON.stringify(updated));
+                    } catch {
+                      /* ignore */
+                    }
+                    return updated;
+                  });
+                }
+
                 addAuditLog(
                   'Planning Board',
-                  'Drag-and-Drop Line Change',
-                  `Reassigned PO ${card.po} (Style ${card.style}) from Line ${oldLine} → Line ${targetLine} via drag & drop.`
+                  'Reschedule Order',
+                  `Reassigned PO ${card.po} (Style ${card.style}) from Line ${oldLine} → Line ${targetLine}${
+                    targetPsd && targetPsd !== oldPsd ? ` (Start: ${targetPsd})` : ''
+                  }.`
                 );
 
                 setLineChangeNotification({
-                  text: `PO ${card.po} (Style ${card.style}) moved from Line ${oldLine} → Line ${targetLine}`,
+                  text: `PO ${card.po} (Style ${card.style}) moved to Line ${targetLine}${
+                    targetPsd && targetPsd !== oldPsd ? ` starting ${targetPsd}` : ''
+                  }`,
                   onUndo: () => {
                     setLineReassignments((prev) => {
                       const next = { ...prev };
@@ -887,11 +1047,17 @@ export default function App() {
                       }
                       return next;
                     });
-                    addAuditLog(
-                      'Planning Board',
-                      'Undo Line Change',
-                      `Restored PO ${card.po} back to Line ${oldLine}.`
-                    );
+                    setDateAdjustments((prev) => {
+                      const next = { ...prev };
+                      delete next[cardId];
+                      try {
+                        localStorage.setItem(DATE_ADJUSTMENTS_KEY, JSON.stringify(next));
+                      } catch {
+                        /* ignore */
+                      }
+                      return next;
+                    });
+                    addAuditLog('Planning Board', 'Undo Reschedule', `Restored PO ${card.po} back to Line ${oldLine}.`);
                     setLineChangeNotification(null);
                   },
                 });
@@ -901,10 +1067,7 @@ export default function App() {
 
           <KpiTiles k={kpi} onDrillDown={handleKpiDrillDown} />
 
-          <section className="sl-sec" id="line-status">
-            <h2>Line status</h2>
-            <LineStatusTable rows={derived.summary} filters={filters} />
-          </section>
+
 
           <section className="sl-sec" id="daily-output">
             <h2>Daily planned output</h2>
@@ -916,42 +1079,7 @@ export default function App() {
             <Heatmap load={derived.load} filters={filters} />
           </section>
 
-          <section className="sl-sec" id="po-plan">
-            <h2>PO plan</h2>
-            <PoTable plan={effectivePlan} pv={derived.pv} filters={filters} />
-          </section>
 
-          <section className="sl-sec" id="order-book">
-            <h2>Order book</h2>
-            <OrderBook book={derived.book} open={derived.open} />
-          </section>
-
-          <DataPanel
-            custom={custom}
-            replace={replace}
-            restore={restore}
-            error={null}
-          />
-
-          <details id="definitions">
-            <summary>Definitions</summary>
-            <dl>
-              <dt>PSD / PED</dt>
-              <dd>Planned sewing start and end dates on the line, from the PRODUCTION PLAN tab. A PO marked "Running" starts on its first planned day.</dd>
-              <dt>Working days</dt>
-              <dd>Dates listed in the MANPOWER tab, with holidays already removed.</dd>
-              <dt>Produce minutes</dt>
-              <dd>Line plan quantity × SMV per piece.</dd>
-              <dt>Sewn / balance</dt>
-              <dd>Sewn is Sewing Qty, or else "Production up to …" from the plan tab. Balance is line plan quantity minus sewn.</dd>
-              <dt>Available minutes</dt>
-              <dd>Manpower × working hours × 60, less NPT minutes per operator.</dd>
-              <dt>Planned efficiency</dt>
-              <dd>Produce minutes planned for a line on a day ÷ that day's available minutes.</dd>
-              <dt>Days late</dt>
-              <dd>Plan ETD minus updated ETD, in calendar days. Above zero means the plan ships after the buyer's date.</dd>
-            </dl>
-          </details>
         </>
       )}
 
@@ -960,6 +1088,7 @@ export default function App() {
         <OrderDatabaseView
           orders={allOrders}
           plan={effectivePlan}
+          styles={masterStyles}
           onAddOrder={handleAddOrder}
           onUpdateOrder={() => {}}
           onAssignToLine={(ord) => {
@@ -1052,6 +1181,15 @@ export default function App() {
           onRevert={handleRevertSplit}
         />
       )}
+
+      {/* Smart Auto-Resolve Conflicts Modal */}
+      <AutoResolveModal
+        isOpen={autoResolveState.isOpen}
+        onClose={() => setAutoResolveState((prev) => ({ ...prev, isOpen: false }))}
+        proposedChanges={autoResolveState.proposedChanges}
+        conflictsBeforeCount={autoResolveState.conflictsBeforeCount}
+        onApply={handleApplyAutoResolve}
+      />
 
       {/* Interactive KPI & Figure Drill Down Modal */}
       <KpiDrillDownModal

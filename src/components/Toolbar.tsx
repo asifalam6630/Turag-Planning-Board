@@ -15,9 +15,11 @@ interface Props {
   calMax?: string;
   onReset: () => void;
   resetKey: number;
+  conflictsCount?: number;
+  onAutoResolve?: () => void;
 }
 
-export function Toolbar({ filters, setFilters, board, setBoard, lines, buyers, statuses, calMin, calMax, onReset, resetKey }: Props) {
+export function Toolbar({ filters, setFilters, board, setBoard, lines, buyers, statuses, calMin, calMax, onReset, resetKey, conflictsCount = 0, onAutoResolve }: Props) {
   const setView = (view: ViewPreset) => setBoard({ ...board, view, px: VIEW_PX[view] });
   const zoom = (d: number) => {
     const px = Math.max(24, Math.min(240, board.px + d));
@@ -33,14 +35,6 @@ export function Toolbar({ filters, setFilters, board, setBoard, lines, buyers, s
   return (
     <div className="pb-bar" id="board-toolbar">
       <div className="pb-brand"><b>TURAG PLANNING BOARD</b><span>Production schedule</span></div>
-
-      <div className="pb-seg" role="group" aria-label="Time scale">
-        {(['month', 'week', 'day'] as ViewPreset[]).map((v) => (
-          <button key={v} type="button" aria-pressed={board.view === v} onClick={() => setView(v)}>
-            {v === 'month' ? 'Monthly view' : v === 'week' ? 'Weekly view' : 'Daily view'}
-          </button>
-        ))}
-      </div>
 
       <input type="search" className="pb-search" placeholder="Search style, PO, buyer" aria-label="Search style, PO or buyer"
         value={board.q} onChange={(e) => setBoard({ ...board, q: e.target.value })} />
@@ -74,7 +68,29 @@ export function Toolbar({ filters, setFilters, board, setBoard, lines, buyers, s
         <option value="status">Colour: present status</option>
         <option value="buyer">Colour: buyer</option>
         <option value="risk">Colour: ETD risk</option>
+        <option value="capacity">Colour: capacity workload</option>
       </select>
+
+      {/* Smart Auto-Resolve Conflicts button */}
+      {onAutoResolve && (
+        <button
+          type="button"
+          onClick={onAutoResolve}
+          className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer shadow-2xs flex items-center gap-1.5 ${
+            conflictsCount > 0
+              ? 'bg-[var(--color-bad)] text-white hover:opacity-90 animate-pulse'
+              : 'bg-[var(--series-1)]/15 text-[var(--series-1)] border border-[var(--series-1)]/40 hover:bg-[var(--series-1)]/25'
+          }`}
+          title="Auto-Resolve Finite Capacity Conflicts across lines"
+        >
+          <span>⚡ Auto-Resolve</span>
+          {conflictsCount > 0 && (
+            <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-white text-[var(--color-bad)] font-extrabold">
+              {conflictsCount}
+            </span>
+          )}
+        </button>
+      )}
 
       <span className="pb-dates" key={resetKey}>
         DATES
@@ -83,11 +99,6 @@ export function Toolbar({ filters, setFilters, board, setBoard, lines, buyers, s
         <input type="date" aria-label="Board end date" min={calMin} max={calMax} defaultValue={board.to ?? ''} onChange={dateChange('to')} />
       </span>
 
-      <div className="pb-seg" role="group" aria-label="Tracks per line">
-        <button type="button" aria-pressed={board.multi} onClick={() => setBoard({ ...board, multi: true })}>Multiple view</button>
-        <button type="button" aria-pressed={!board.multi} onClick={() => setBoard({ ...board, multi: false })}>Single view</button>
-      </div>
-
       <span className="pb-zoom">
         <button type="button" className="sl-btn" aria-label="Zoom out" onClick={() => zoom(-12)}>−</button>
         <span>{board.px}px</span>
@@ -95,7 +106,24 @@ export function Toolbar({ filters, setFilters, board, setBoard, lines, buyers, s
       </span>
 
       <button type="button" className="sl-btn" onClick={onReset}>Reset</button>
-      <button type="button" className="sl-btn pb-today" onClick={() => setBoard({ ...board, todayTick: board.todayTick + 1 })}>Today</button>
+
+      {/* Side-by-side Segment controls positioned at the far right next to Today */}
+      <div className="flex items-center gap-2 ml-auto flex-wrap">
+        <div className="pb-seg" role="group" aria-label="Time scale">
+          {(['month', 'week', 'day'] as ViewPreset[]).map((v) => (
+            <button key={v} type="button" aria-pressed={board.view === v} onClick={() => setView(v)}>
+              {v === 'month' ? 'Monthly view' : v === 'week' ? 'Weekly view' : 'Daily view'}
+            </button>
+          ))}
+        </div>
+
+        <div className="pb-seg" role="group" aria-label="Tracks per line">
+          <button type="button" aria-pressed={board.multi} onClick={() => setBoard({ ...board, multi: true })}>Multiple view</button>
+          <button type="button" aria-pressed={!board.multi} onClick={() => setBoard({ ...board, multi: false })}>Single view</button>
+        </div>
+
+        <button type="button" className="sl-btn pb-today" style={{ margin: 0 }} onClick={() => setBoard({ ...board, todayTick: board.todayTick + 1 })}>Today</button>
+      </div>
     </div>
   );
 }
