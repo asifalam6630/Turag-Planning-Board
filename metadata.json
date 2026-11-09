@@ -1,0 +1,8 @@
+{
+  "name": "Turag Planning Board",
+  "description": "Garment sewing line plan for Turag: a planning board of POs on each sewing line across working days, with headline figures, line status, daily planned output, a planned-efficiency heatmap, a sortable PO table and the order book.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
