@@ -676,7 +676,7 @@ export default function App() {
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-3.5 flex-wrap">
             <img
-              src="/assets/aistudio/image_bfec73ab.png"
+              src={`${import.meta.env.BASE_URL}assets/aistudio/image_bfec73ab.png`}
               alt="TURAG"
               className="h-8 md:h-9 w-auto object-contain transition-all"
             />
