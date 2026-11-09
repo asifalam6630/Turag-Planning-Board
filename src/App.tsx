@@ -57,12 +57,29 @@ const CUSTOM_ORDERS_KEY = 'turag-erp:custom-orders';
 const CUSTOM_LINES_KEY = 'turag-erp:custom-lines';
 const AUDIT_LOGS_KEY = 'turag-erp:audit-logs';
 const THEME_STORAGE_KEY = 'turag-erp:theme';
+const LINE_REASSIGNMENTS_KEY = 'turag-planning-board:line-reassignments';
 
 export default function App() {
   const { state, custom, replace, restore } = useDashboardData();
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [board, setBoard] = useState<BoardState>(DEFAULT_BOARD);
   const [resetKey, setResetKey] = useState(0);
+
+  // Drag and drop line reassignments state (persistent)
+  const [lineReassignments, setLineReassignments] = useState<Record<string, number>>(() => {
+    try {
+      const stored = localStorage.getItem(LINE_REASSIGNMENTS_KEY);
+      return stored ? JSON.parse(stored) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  // Notification for line move with Undo support
+  const [lineChangeNotification, setLineChangeNotification] = useState<{
+    text: string;
+    onUndo: () => void;
+  } | null>(null);
 
   // Multiple Theme Mode Selection State (Light, Dark, Navy, Emerald, Charcoal, Amber, System)
   const [theme, setTheme] = useState<AppTheme>(() => {
@@ -315,14 +332,29 @@ export default function App() {
     return [...customOrders, ...d.orders];
   }, [d, customOrders]);
 
-  // Derive effective plan and daily output with active splits applied
+  // Derive effective plan and daily output with line reassignments and active splits applied
   const { effectivePlan, effectiveDaily } = useMemo(() => {
     if (!d) return { effectivePlan: [] as PlanRow[], effectiveDaily: [] as DailyRow[] };
-    const splitEntries = Object.values(activeSplits);
-    if (!splitEntries.length) return { effectivePlan: d.plan, effectiveDaily: d.daily };
 
-    let plan = [...d.plan];
-    let daily = [...d.daily];
+    // Apply drag-and-drop line reassignments first
+    let plan = d.plan.map((r) => {
+      const newLine = lineReassignments[r.id];
+      if (newLine !== undefined) {
+        return { ...r, line: newLine };
+      }
+      return r;
+    });
+
+    let daily = d.daily.map((dr) => {
+      const newLine = lineReassignments[dr.id];
+      if (newLine !== undefined) {
+        return { ...dr, line: newLine };
+      }
+      return dr;
+    });
+
+    const splitEntries = Object.values(activeSplits);
+    if (!splitEntries.length) return { effectivePlan: plan, effectiveDaily: daily };
 
     for (const { result } of splitEntries) {
       const idx = plan.findIndex((r) => r.id === result.origId);
@@ -385,7 +417,7 @@ export default function App() {
     }
 
     return { effectivePlan: plan, effectiveDaily: daily };
-  }, [d, activeSplits]);
+  }, [d, activeSplits, lineReassignments]);
 
   // Derived dashboard metrics (Centralized calculation engine)
   const derived = useMemo(() => {
@@ -708,7 +740,6 @@ export default function App() {
             { id: 'planning-board', label: '📊 Planning Board', badge: null },
             { id: 'orders', label: '📋 Order Database', badge: `${allOrders.length}` },
             { id: 'upload', label: '📥 Excel Upload', badge: null },
-            { id: 'line-allocation', label: '🔄 Line Allocation', badge: `${derived?.lines.length ?? 0} Lines` },
             { id: 'factories', label: '🏭 Factory & Facilities', badge: `${factories.length}` },
             { id: 'master-data', label: '🗃️ Master Data', badge: null },
             { id: 'reports', label: '📈 Reports & Export', badge: null },
@@ -744,6 +775,35 @@ export default function App() {
       {/* MODULE 1: EXISTING PLANNING DASHBOARD (100% Preserved) */}
       {activeModule === 'planning-board' && d && derived && kpi && (
         <>
+          {/* Notification Banner for Drag-and-Drop Line Moves with Undo */}
+          {lineChangeNotification && (
+            <div className="flex items-center justify-between px-3.5 py-2.5 rounded-lg bg-[var(--series-1)]/15 border border-[var(--series-1)] text-xs shadow-xs animate-in fade-in slide-in-from-top-1">
+              <div className="flex items-center gap-2">
+                <span className="text-base">⇄</span>
+                <span className="font-bold text-[var(--color-fg)]">
+                  {lineChangeNotification.text}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={lineChangeNotification.onUndo}
+                  className="px-2.5 py-1 text-xs font-bold rounded border border-[var(--color-border-line)] bg-[var(--color-bg)] hover:bg-[var(--color-panel)] transition-colors cursor-pointer"
+                >
+                  ↩ Undo Move
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLineChangeNotification(null)}
+                  className="px-1.5 py-0.5 text-xs text-[var(--color-fg-muted)] hover:text-[var(--color-fg)] cursor-pointer"
+                  title="Dismiss notification"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          )}
+
           {Object.keys(activeSplits).length > 0 && (
             <div className="flex items-center justify-between px-3.5 py-2.5 rounded-lg bg-[var(--color-panel)] border border-[var(--series-4)]/40 text-xs shadow-xs">
               <div className="flex items-center gap-2">
@@ -791,6 +851,50 @@ export default function App() {
               onOpenLineAllocation={() => {
                 setActiveModule('line-allocation');
                 addAuditLog('Planning Board', 'Open Line Allocation', 'Opened Line Allocation workspace from board header button');
+              }}
+              onMoveCardToLine={(cardId, targetLine) => {
+                const card = effectivePlan.find((r) => r.id === cardId);
+                if (!card) return;
+                const oldLine = card.line;
+                if (oldLine === targetLine) return;
+
+                setLineReassignments((prev) => {
+                  const updated = { ...prev, [cardId]: targetLine };
+                  try {
+                    localStorage.setItem(LINE_REASSIGNMENTS_KEY, JSON.stringify(updated));
+                  } catch {
+                    /* ignore */
+                  }
+                  return updated;
+                });
+
+                addAuditLog(
+                  'Planning Board',
+                  'Drag-and-Drop Line Change',
+                  `Reassigned PO ${card.po} (Style ${card.style}) from Line ${oldLine} → Line ${targetLine} via drag & drop.`
+                );
+
+                setLineChangeNotification({
+                  text: `PO ${card.po} (Style ${card.style}) moved from Line ${oldLine} → Line ${targetLine}`,
+                  onUndo: () => {
+                    setLineReassignments((prev) => {
+                      const next = { ...prev };
+                      delete next[cardId];
+                      try {
+                        localStorage.setItem(LINE_REASSIGNMENTS_KEY, JSON.stringify(next));
+                      } catch {
+                        /* ignore */
+                      }
+                      return next;
+                    });
+                    addAuditLog(
+                      'Planning Board',
+                      'Undo Line Change',
+                      `Restored PO ${card.po} back to Line ${oldLine}.`
+                    );
+                    setLineChangeNotification(null);
+                  },
+                });
               }}
             />
           </section>

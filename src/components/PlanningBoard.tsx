@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { bisectLeft, bisectRight, group, sum, utcDay, utcDays, utcFormat } from 'd3';
 import type { BoardState, Filters, PlanRow, PoView } from '../types';
@@ -17,6 +17,7 @@ interface Props {
   board: BoardState;
   onCardClick?: (r: PlanRow) => void;
   onOpenLineAllocation?: () => void;
+  onMoveCardToLine?: (cardId: string, targetLine: number) => void;
 }
 
 interface Card {
@@ -31,13 +32,19 @@ interface Card {
 
 const byPsd = (a: PlanRow, b: PlanRow) => ((a.psd ?? '') < (b.psd ?? '') ? -1 : (a.psd ?? '') > (b.psd ?? '') ? 1 : 0);
 
-export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCardClick, onOpenLineAllocation }: Props) {
+export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCardClick, onOpenLineAllocation, onMoveCardToLine }: Props) {
   const { boxRef, tip, show, hide } = useTooltip<HTMLDivElement>();
   const scrollRef = useRef<HTMLDivElement>(null);
   const cornerRef = useRef<HTMLDivElement>(null);
   const leftIdx = useRef<number | null>(null);
   const lastTodayTick = useRef(-1);
   const todayS = todayIso();
+
+  // Drag and drop line change state
+  const [draggingCardId, setDraggingCardId] = useState<string | null>(null);
+  const [draggingSourceLine, setDraggingSourceLine] = useState<number | null>(null);
+  const [dragOverLine, setDragOverLine] = useState<number | null>(null);
+  const isDraggingRef = useRef(false);
 
   const model = useMemo(() => {
     const all = plan.filter((r) => r.psd && r.ped);
@@ -223,8 +230,42 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCar
             const h = pad * 2 + nl * laneH + (nl - 1) * gap;
             const total = sum(rs, (r) => r.planQty ?? 0);
 
+            const isRowDropTarget = dragOverLine === l && draggingSourceLine !== l;
+
             return (
-              <div className="pb-row" key={l}>
+              <div
+                className={`pb-row transition-all duration-150 ${isRowDropTarget ? 'is-drag-target' : ''}`}
+                key={l}
+                onDragOver={(e) => {
+                  if (!draggingCardId) return;
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = 'move';
+                  if (dragOverLine !== l) setDragOverLine(l);
+                }}
+                onDragEnter={(e) => {
+                  if (!draggingCardId) return;
+                  e.preventDefault();
+                  setDragOverLine(l);
+                }}
+                onDragLeave={(e) => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                    if (dragOverLine === l) setDragOverLine(null);
+                  }
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const cardId = e.dataTransfer.getData('text/plain') || draggingCardId;
+                  const fromLine = draggingSourceLine;
+                  setDragOverLine(null);
+                  setDraggingCardId(null);
+                  setDraggingSourceLine(null);
+                  if (!cardId) return;
+                  if (fromLine === l) return;
+                  if (onMoveCardToLine) {
+                    onMoveCardToLine(cardId, l);
+                  }
+                }}
+              >
                 <div className="pb-left">
                   <div className="pb-lt">
                     <span className="pb-lnum">{l}</span>
@@ -232,11 +273,25 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCar
                     <span className="pb-badge">{rs.length} {rs.length === 1 ? 'order' : 'orders'}</span>
                   </div>
                   <div className="pb-kv"><span>Total planned</span><b>{int(total)} pcs</b></div>
-                  {board.multi && cards.length > 0 && (
-                    <div className="pb-tracks"><span>Parallel tracks</span><b>{nl} active {nl === 1 ? 'lane' : 'lanes'}</b></div>
+                  {isRowDropTarget ? (
+                    <div className="pb-tracks bg-[var(--series-1)] text-white font-bold animate-pulse text-[11px] py-1 shadow-xs">
+                      <span>📥 Drop to reassign to Line {l}</span>
+                    </div>
+                  ) : (
+                    board.multi && cards.length > 0 && (
+                      <div className="pb-tracks"><span>Parallel tracks</span><b>{nl} active {nl === 1 ? 'lane' : 'lanes'}</b></div>
+                    )
                   )}
                 </div>
-                <div className="pb-lane" style={{ width: W, height: h, backgroundSize: `${px}px 100%` }}>
+                <div className="pb-lane relative" style={{ width: W, height: h, backgroundSize: `${px}px 100%` }}>
+                  {isRowDropTarget && (
+                    <div className="absolute inset-0 z-20 flex items-center justify-center bg-[var(--series-1)]/15 border-2 border-dashed border-[var(--series-1)] rounded pointer-events-none animate-in fade-in duration-100">
+                      <div className="px-3.5 py-1.5 bg-[var(--series-1)] text-white text-xs font-bold rounded-lg shadow-lg flex items-center gap-2">
+                        <span className="text-sm">⇄</span>
+                        <span>Drop here to move order to Line {l}</span>
+                      </div>
+                    </div>
+                  )}
                   {ti >= 0 && <div className="pb-todaycol" style={{ left: ti * px, width: px }} />}
                   {ti >= 0 && <div className="pb-todayline" style={{ left: ti * px + px / 2 }} />}
                   {!cards.length && (
@@ -247,18 +302,57 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, onCar
                     const style = { '--c': colorOf(r), left: c.x, width: c.w, top: pad + c.lane * (laneH + gap), height: laneH } as CSSProperties;
                     const [title, tipLines] = tipFor(r, c.days);
                     const cardTip = cardDataFor(r, c.days);
+                    const isDraggingThis = draggingCardId === r.id;
+
                     return (
-                      <div key={r.id} className="pb-card group/card" style={style} tabIndex={0} role="button"
-                        aria-label={`Line ${l}, ${r.buyer} style ${r.style}, PO ${r.po}, ${int(r.planQty ?? 0)} pieces, ${fd(r.psd)} to ${fd(r.ped)}. Click to split line.`}
-                        onPointerMove={(e) => show(e, title, tipLines, cardTip)}
+                      <div
+                        key={r.id}
+                        className={`pb-card group/card ${isDraggingThis ? 'is-dragging' : ''}`}
+                        style={style}
+                        tabIndex={0}
+                        role="button"
+                        draggable={true}
+                        onDragStart={(e) => {
+                          isDraggingRef.current = true;
+                          e.dataTransfer.setData('text/plain', r.id);
+                          e.dataTransfer.effectAllowed = 'move';
+                          setDraggingCardId(r.id);
+                          setDraggingSourceLine(l);
+                          hide();
+                        }}
+                        onDragEnd={() => {
+                          setDraggingCardId(null);
+                          setDraggingSourceLine(null);
+                          setDragOverLine(null);
+                          setTimeout(() => {
+                            isDraggingRef.current = false;
+                          }, 150);
+                        }}
+                        aria-label={`Line ${l}, ${r.buyer} style ${r.style}, PO ${r.po}, ${int(r.planQty ?? 0)} pieces, ${fd(r.psd)} to ${fd(r.ped)}. Drag to change line, click to split line.`}
+                        onPointerMove={(e) => {
+                          if (!draggingCardId) show(e, title, tipLines, cardTip);
+                        }}
                         onClick={(e) => {
                           e.stopPropagation();
                           hide();
+                          if (isDraggingRef.current) return;
                           if (onCardClick) onCardClick(r);
                         }}
-                        onFocus={(e) => show(e, title, tipLines, cardTip)} onPointerLeave={hide} onBlur={hide}>
+                        onFocus={(e) => {
+                          if (!draggingCardId) show(e, title, tipLines, cardTip);
+                        }}
+                        onPointerLeave={hide}
+                        onBlur={hide}
+                      >
                         <div className="pb-r">
                           {c.cutL && <span className="pb-dim">◂</span>}
+                          {/* Drag handle chip */}
+                          <span
+                            className="pb-chip font-bold text-[9px] opacity-75 group-hover/card:opacity-100 cursor-grab active:cursor-grabbing select-none"
+                            title="Drag card to move to another line"
+                          >
+                            ⠿ Move
+                          </span>
                           <span className="pb-chip pb-n">#{seq.get(r.id)}</span>
                           {r.isSplit && (
                             <span className="pb-chip font-bold text-[10px] bg-[var(--series-4)] text-white border-[var(--series-4)]">

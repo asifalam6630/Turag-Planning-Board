@@ -368,6 +368,9 @@ body { font: 14px/1.45 var(--font-anthropic-sans); }
 .pb-dim{color:var(--color-fg-muted);flex:none}
 .pb-late{width:7px;height:7px;border-radius:50%;background:var(--color-bad);flex:none}
 .pb-empty{position:absolute;left:12px;top:50%;transform:translateY(-50%);font-size:11px;color:var(--color-fg-muted);pointer-events:none}
+.pb-card.is-dragging{opacity:.4;border-style:dashed;border-width:2px;cursor:grabbing;z-index:10;transform:scale(.98)}
+.pb-row.is-drag-target{background:color-mix(in srgb,var(--series-1) 12%,var(--color-bg));outline:2px dashed var(--series-1);outline-offset:-2px}
+.pb-row.is-drag-target .pb-left{background:color-mix(in srgb,var(--series-1) 22%,var(--color-panel))}
 
 /* Update data panel */
 .sl-data{border:1px solid var(--color-border-line);border-radius:var(--cds-radius);padding:var(--cds-pad-md) var(--cds-pad-lg);background:var(--color-panel)}
