@@ -1,5 +1,6 @@
 import { useState, type ChangeEvent } from 'react';
 import type { BoardState, ColorMode, Filters, RunStatus, ViewPreset } from '../types';
+import { fdLong, todayIso } from '../lib/format';
 
 export const VIEW_PX: Record<ViewPreset, number> = { month: 40, week: 92, day: 150 };
 
@@ -199,7 +200,16 @@ export function Toolbar({ filters, setFilters, board, setBoard, lines, buyers, s
         type="button"
         className="sl-btn pb-today"
         style={onAutoResolve ? { marginLeft: 0 } : undefined}
-        onClick={() => setBoard({ ...board, todayTick: board.todayTick + 1 })}
+        title={`Jump to Today (${fdLong(todayIso())})`}
+        onClick={() => {
+          const today = todayIso();
+          setBoard({
+            ...board,
+            from: board.from && board.from > today ? null : board.from,
+            to: board.to && board.to < today ? null : board.to,
+            todayTick: board.todayTick + 1,
+          });
+        }}
       >
         Today
       </button>

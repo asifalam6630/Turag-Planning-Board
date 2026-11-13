@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
+import { todayIso } from '../lib/format';
 
 const CALENDAR_OVERRIDES_KEY = 'turag-calendar-day-overrides';
 
@@ -247,7 +248,7 @@ export function GoogleCalendarView({ calendar, onCalendarChange }: GoogleCalenda
     }
 
     // Current month days
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const todayStr = todayIso();
     for (let d = 1; d <= daysInMonth; d++) {
       const iso = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
       const dayOfWeek = new Date(currentYear, currentMonth, d).getDay();

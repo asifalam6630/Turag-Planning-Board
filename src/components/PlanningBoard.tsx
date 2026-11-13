@@ -96,15 +96,18 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, load,
       && (board.run === 'All' || runOf(r) === board.run)
       && (!q || [r.style, r.po, r.buyer, r.color].some((v) => String(v ?? '').toLowerCase().includes(q))));
 
-    // Working-day columns
+    // Working-day columns (always include today's date when within the visible/default board range, even if today is a weekly holiday like Friday)
     const minPsd = all.reduce<string | null>((m, r) => (!m || (r.psd as string) < m ? (r.psd as string) : m), null) ?? todayS;
     const maxPed = all.reduce<string | null>((m, r) => (!m || (r.ped as string) > m ? (r.ped as string) : m), null) ?? todayS;
-    let lo = board.from ?? minPsd;
-    let hi = board.to ?? maxPed;
+    let lo = board.from ?? (minPsd < todayS ? minPsd : todayS);
+    let hi = board.to ?? (maxPed > todayS ? maxPed : todayS);
     if (hi < lo) [lo, hi] = [hi, lo];
     let days = calendar.filter((d) => d >= lo && d <= hi);
     if (!board.to && calendar.filter((d) => d > hi).length > 0) {
       days = days.concat(calendar.filter((d) => d > hi).slice(0, 3));
+    }
+    if (todayS >= lo && todayS <= hi && !days.includes(todayS)) {
+      days = [...days, todayS].sort();
     }
     if (days.length < 2) days = utcDays(toDate(lo), utcDay.offset(toDate(hi), 4)).map((d) => d.toISOString().slice(0, 10));
 
@@ -133,6 +136,7 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, load,
   const gap = 6;
   const pad = 8;
   const ti = days.indexOf(todayS);
+  const calendarSet = useMemo(() => new Set(calendar), [calendar]);
   const buyers = useMemo(() => [...new Set(plan.map((r) => r.buyer))].sort(), [plan]);
   const styles = useMemo(() => [...new Set(plan.map((r) => r.style))].sort(), [plan]);
   const orders = useMemo(() => [...new Set(plan.map((r) => r.po))].sort(), [plan]);
@@ -253,13 +257,24 @@ export function PlanningBoard({ plan, pv, calendar, lines, filters, board, load,
                 {months.map((m) => <div key={m.key} className="pb-month" style={{ width: m.width }}>{m.label}</div>)}
               </div>
               <div className="pb-days">
-                {days.map((d, i) => (
-                  <div key={d} className={'pb-day' + (i === ti ? ' is-today' : '')} style={{ width: px }}>
-                    {i === ti && px >= 40 && <span className="pb-pill">TODAY</span>}
-                    <span>{d.slice(8, 10)}</span>
-                    <small>{px >= 34 ? weekday(toDate(d)) : weekday(toDate(d)).slice(0, 1)}</small>
-                  </div>
-                ))}
+                {days.map((d, i) => {
+                  const isHol = calendar.length > 0 && !calendarSet.has(d);
+                  return (
+                    <div
+                      key={d}
+                      className={'pb-day' + (i === ti ? ' is-today' : '') + (isHol ? ' is-holiday' : '')}
+                      style={{ width: px }}
+                      title={isHol ? `${fdLong(d)} (Weekly Holiday / Off-day)` : fdLong(d)}
+                    >
+                      {i === ti && px >= 40 && <span className="pb-pill">TODAY</span>}
+                      <span>{d.slice(8, 10)}</span>
+                      <small style={{ whiteSpace: 'nowrap' }}>
+                        {px >= 34 ? weekday(toDate(d)) : weekday(toDate(d)).slice(0, 1)}
+                        {isHol && px >= 60 ? ' · Off' : ''}
+                      </small>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
